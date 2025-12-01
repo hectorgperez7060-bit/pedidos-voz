@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pedido por voz</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#1976d2" />
+  <link rel="manifest" href="manifest.json" />
+
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f0f0f0; }
+    h1 { text-align:center; }
+    input, button { padding: 8px; margin:5px 0; }
+    table { border-collapse: collapse; width: 100%; margin-top: 15px; background: white; }
+    th, td { border: 1px solid #ccc; padding: 6px; }
+    th { background: #ddd; }
+    .btn { padding: 8px 12px; background: #1976d2; color:#fff; border:none; cursor:pointer; }
+    .btn-danger { background:#d32f2f; }
+    .info { font-size: 0.9rem; color:#555; }
+  </style>
+</head>
+<body>
+
+<h1>Gestor de Pedidos por Voz</h1>
+
+<label>Cliente:</label>
+<input id="cliente" type="text" placeholder="Ej: ROBERTO" />
+
+<br><br>
+
+<button class="btn" id="btnVoz">🎙️ Dictar ítems (modo continuo)</button>
+<p class="info">
+  Decí una frase por producto, por ejemplo:<br>
+  – "arroz gallo oro un kilo cinco unidades"<br>
+  – "embudo grande tres unidades"<br>
+  – "vino toro medio litro ocho"<br>
+  Hablás, hacés una pequeña pausa, y seguís con el siguiente producto.
+</p>
+
+<h3>Pedido</h3>
+<table>
+  <thead>
+    <tr>
+      <th>Código</th>
+      <th>Descripción</th>
+      <th>Precio</th>
+      <th>Cantidad</th>
+      <th>Total</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="tablaPedido"></tbody>
+</table>
+
+<h2>Total: $<span id="totalGeneral">0</span></h2>
+
+<button class="btn" id="btnExportar">Exportar a CSV</button>
+<button class="btn-danger" id="btnLimpiar">Limpiar pedido</button>
+
+<!-- TU LISTA DE PRODUCTOS -->
+<script src="productos_lista.js"></script>
+
+<script>
+let pedido = [];
+
+// =================== PEDIDO POR VOZ CONTINUO ===================
+
+let reconocimientoItem = null;
+
+function iniciarDictadoItem() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    alert("Tu navegador no soporta dictado por voz.");
+    return;
+  }
+
+  if (!reconocimientoItem) {
+    reconocimientoItem = new SpeechRecognition();
+    reconocimientoItem.lang = "es-AR";
+    reconocimientoItem.continuous = true;        // ESCUCHA CONTINUO
+    reconocimientoItem.interimResults = false;
+
+    reconocimientoItem.onresult = (event) => {
+      const texto = event.results[event.results.length - 1][0].transcript.toLowerCase().trim();
+      console.log("Frase dictada:", texto);
+      procesarFrasePedido(texto);
+    };
+
+    reconocimientoItem.onerror = (event) => {
+      console.log("Error voz item:", event.error);
+    };
+
+    // si se corta solo, lo volvemos a arrancar
+    reconocimientoItem.onend = () => {
+      console.log("Reconocimiento terminado, reiniciando...");
+      reconocimientoItem.start();
+    };
+  }
+
+  reconocimientoItem.start();
+}
+
+document.getElementById("btnVoz").addEventListener("click", iniciarDictadoItem);
+
+// Interpretar frase y agregar al pedido
+function procesarFrasePedido(frase) {
+  // 1) cantidad
+  let cantidad = extraerCantidad(frase);
+  if (!cantidad || cantidad <= 0) cantidad = 1;
+
+  // 2) limpiar frase: sacar números y palabras de cantidad/unidad
+  let fraseProd = frase
+    .replace(/\d+/g, " ")
+    .replace(/\b(un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|unidades?|unidad|kilo?s?|kg|bolsa?s?|paquete?s?|botella?s?|litro?s?)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!fraseProd) {
+    alert("No entendí qué producto querés. Probá diciendo el nombre, por ejemplo 'arroz gallo oro un kilo cinco unidades'.");
+    return;
+  }
+
+  const palabras = fraseProd.split(" ").filter(Boolean);
+
+  // 3) buscar producto que más coincida
+  let mejor = null;
+  let mejorScore = 0;
+
+  LISTA_PRODUCTOS.forEach(p => {
+    const desc = (p.descripcion || "").toLowerCase();
+    let score = 0;
+    palabras.forEach(w => {
+      if (desc.includes(w)) score++;
+    });
+    if (score > mejorScore) {
+      mejorScore = score;
+      mejor = p;
+    }
+  });
+
+  if (!mejor || mejorScore === 0) {
+    alert("No encontré ningún producto que coincida con: " + fraseProd);
+    return;
+  }
+
+  const precioNum = parseFloat(mejor.precio);
+
+  // 4) agregar directo al pedido
+  const item = {
+    codigo: mejor.codigo,
+    desc: mejor.descripcion,
+    precio: isNaN(precioNum) ? 0 : precioNum,
+    cant: cantidad,
+    total: (isNaN(precioNum) ? 0 : precioNum) * cantidad
+  };
+
+  pedido.push(item);
+  renderPedido();
+}
+
+// extraer cantidad de la frase (números y palabras)
+function extraerCantidad(frase) {
+  const nums = [...frase.matchAll(/\d+/g)];
+  if (nums.length) {
+    const ultimo = nums[nums.length - 1][0];
+    return parseInt(ultimo, 10);
+  }
+
+  const mapa = {
+    "uno":1, "un":1, "una":1,
+    "dos":2, "tres":3, "cuatro":4, "cinco":5,
+    "seis":6, "siete":7, "ocho":8, "nueve":9, "diez":10
+  };
+
+  const palabras = frase.split(/\s+/);
+  for (let i = palabras.length - 1; i >= 0; i--) {
+    const w = palabras[i];
+    if (mapa[w] !== undefined) return mapa[w];
+  }
+  return null;
+}
+
+// =================== RENDER / CSV / LIMPIAR ===================
+
+function renderPedido() {
+  const tbody = document.getElementById("tablaPedido");
+  tbody.innerHTML = "";
+  let totalGeneral = 0;
+
+  pedido.forEach((p, i) => {
+    totalGeneral += p.total;
+    tbody.innerHTML += `
+      <tr>
+        <td>${p.codigo}</td>
+        <td>${p.desc}</td>
+        <td>${p.precio.toFixed(2)}</td>
+        <td>${p.cant}</td>
+        <td>${p.total.toFixed(2)}</td>
+        <td><button class="btn-danger" onclick="borrarItem(${i})">X</button></td>
+      </tr>
+    `;
+  });
+
+  document.getElementById("totalGeneral").textContent = totalGeneral.toFixed(2);
+}
+
+function borrarItem(i) {
+  pedido.splice(i,1);
+  renderPedido();
+}
+
+function limpiarPedido() {
+  pedido = [];
+  renderPedido();
+}
+
+document.getElementById("btnLimpiar").addEventListener("click", limpiarPedido);
+
+function exportarCSV() {
+  if (!pedido.length) {
+    alert("No hay ítems en el pedido.");
+    return;
+  }
+
+  const cliente = document.getElementById("cliente").value || "SIN_CLIENTE";
+  let csv = "Cliente;Código;Descripción;Precio;Cantidad;Total\n";
+
+  pedido.forEach(p => {
+    csv += `${cliente};${p.codigo};${p.desc};${p.precio.toFixed(2)};${p.cant};${p.total.toFixed(2)}\n`;
+  });
+
+  const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `pedido_${cliente}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById("btnExportar").addEventListener("click", exportarCSV);
+
+// =================== REGISTRAR SERVICE WORKER ===================
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(err => {
+    console.log('SW error', err);
+  });
+}
+</script>
+
+</body>
+</html>
